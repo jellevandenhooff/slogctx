@@ -18,6 +18,7 @@ func NewLogger(logger *slog.Logger) *Logger {
 	}
 }
 
+// Default returns a Logger created from slog.Default.
 func Default() *Logger {
 	return NewLogger(slog.Default())
 }

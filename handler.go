@@ -23,6 +23,7 @@ type CtxHandler struct {
 	Inner slog.Handler
 }
 
+// NewCtxHandler creates a CtxHandler wrapping the given slog.Handler.
 func NewCtxHandler(inner slog.Handler) *CtxHandler {
 	return &CtxHandler{Inner: inner}
 }
