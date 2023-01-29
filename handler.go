@@ -3,6 +3,7 @@ package slogctx
 import (
 	"context"
 
+	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
 )
 
@@ -17,10 +18,23 @@ type ctxInfo struct {
 	level    slog.Level
 }
 
+// pendingGroup is a work-in-progress slog.Group attribute.
+//
+// It is used by ctxHandler to support outputting slogctx.WithAttrs attributes
+// at the top-level while still supporting Handler.WithGroup.
+type pendingGroup struct {
+	name  string
+	attrs []slog.Attr
+}
+
 // ctxHandler wraps a slog.Handler with support for WithAttrs and
 // WithMinimumLevel.
 type ctxHandler struct {
-	Inner slog.Handler
+	inner slog.Handler
+
+	// groups is a set of pending slog.Group attributes. Each element will
+	// become a slog.Group nested in the previous group.
+	groups []pendingGroup
 }
 
 // WrapWithCtxHandler wraps a slog.Handler with support for WithAttrs
@@ -28,7 +42,7 @@ type ctxHandler struct {
 //
 // Use WrapDefaultLoggerWithCtxHandler to wrap the handler used by slog.Default.
 func WrapWithCtxHandler(inner slog.Handler) slog.Handler {
-	return &ctxHandler{Inner: inner}
+	return &ctxHandler{inner: inner}
 }
 
 // Enabled implements Handler. It considers a level added to the context with
@@ -39,28 +53,62 @@ func (h *ctxHandler) Enabled(ctx context.Context, level slog.Level) bool {
 			return level >= info.level
 		}
 	}
-	return h.Inner.Enabled(ctx, level)
+	return h.inner.Enabled(ctx, level)
 }
 
 // Handle implements Handler. It adds attributes added to the context with
 // WithAttrs.
 func (h *ctxHandler) Handle(r slog.Record) error {
+	if h.groups != nil {
+		last := h.groups[len(h.groups)-1]
+		attrs := make([]slog.Attr, len(last.attrs)+r.NumAttrs())
+		copy(attrs, last.attrs)
+		i := len(last.attrs)
+		r.Attrs(func(a slog.Attr) {
+			attrs[i] = a
+			i++
+		})
+		attr := slog.Group(last.name, attrs...)
+		for i := len(h.groups) - 2; i >= 0; i-- {
+			cur := h.groups[i]
+			attrs := make([]slog.Attr, len(cur.attrs)+1)
+			copy(attrs, cur.attrs)
+			attrs[len(cur.attrs)] = attr
+			attr = slog.Group(cur.name, attrs...)
+		}
+		r = slog.NewRecord(r.Time, r.Level, r.Message, r.PC, r.Context)
+		r.AddAttrs(attr)
+	}
+
 	if r.Context != nil {
 		if info, ok := r.Context.Value(ctxKey{}).(*ctxInfo); ok {
 			r.AddAttrs(info.attrs...)
 		}
 	}
-	return h.Inner.Handle(r)
+	return h.inner.Handle(r)
 }
 
-// WithAttrs implements Handler. It forwards directly to the original handler.
+// WithAttrs implements Handler. It forwards directly to the original handler if h.groups is nil.
 func (h *ctxHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &ctxHandler{Inner: h.Inner.WithAttrs(attrs)}
+	if h.groups == nil {
+		return &ctxHandler{inner: h.inner.WithAttrs(attrs), groups: nil}
+	} else {
+		cur := h.groups[len(h.groups)-1]
+		newAttrs := make([]slog.Attr, len(cur.attrs)+len(attrs))
+		copy(newAttrs, cur.attrs)
+		copy(newAttrs[len(cur.attrs):], attrs)
+		newGroups := slices.Clone(h.groups)
+		newGroups[len(newGroups)-1].attrs = newAttrs
+		return &ctxHandler{inner: h.inner, groups: newGroups}
+	}
 }
 
-// WithGroup implements Handler. It forwards directly to the original handler.
+// WithGroup implements Handler.
 func (h *ctxHandler) WithGroup(name string) slog.Handler {
-	return &ctxHandler{Inner: h.Inner.WithGroup(name)}
+	newGroups := make([]pendingGroup, len(h.groups)+1)
+	copy(newGroups, h.groups)
+	newGroups[len(newGroups)-1].name = name
+	return &ctxHandler{inner: h.inner, groups: newGroups}
 }
 
 // WithAttrs attaches the given attributes (as in slog.Logger.With) to the

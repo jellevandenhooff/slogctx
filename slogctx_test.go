@@ -3,6 +3,7 @@ package slogctx_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -137,6 +138,59 @@ func TestWithAttrsAndMinimumLevel(t *testing.T) {
 	ctx = slogctx.WithMinimumLevel(slogctx.WithAttrs(context.Background(), "hello", "foo"), slog.LevelDebug)
 	slogctx.Debug(ctx, "hi")
 	check(`level=DEBUG msg=hi hello=foo`)
+}
+
+func TestWithGroup(t *testing.T) {
+	// Run this test both with and without the wrap handler to verify output
+	// matches.
+	for _, wrap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wrap=%v", wrap), func(t *testing.T) {
+			check := setupTestSlogHandler(t, slog.HandlerOptions{})
+
+			ctx := context.Background()
+
+			suffix := ""
+			if wrap {
+				// when running with the wrapped handler, expect our attrs to be included
+				// setup slogctx
+				slogctx.WrapDefaultLoggerWithCtxHandler()
+				ctx = slogctx.WithAttrs(ctx, "attr", 1, "buz", "boo")
+				suffix = " attr=1 buz=boo"
+			}
+
+			logger := slog.Default()
+			logger.WithContext(ctx).Info("hi")
+			check(`level=INFO msg=hi` + suffix)
+
+			logger = logger.WithGroup("group1")
+			logger.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.logattr=logval` + suffix)
+
+			logger = logger.With("attr1", "val1")
+			logger.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.logattr=logval` + suffix)
+
+			forked := logger
+
+			logger = logger.With("attr2", "val2")
+			logger.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.attr2=val2 group1.logattr=logval` + suffix)
+
+			logger = logger.WithGroup("group2")
+			logger.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.attr2=val2 group1.group2.logattr=logval` + suffix)
+
+			forked.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.logattr=logval` + suffix)
+
+			forked = forked.With("attr2", "val2")
+			forked.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.attr2=val2 group1.logattr=logval` + suffix)
+
+			logger.WithContext(ctx).Info("hi", "logattr", "logval")
+			check(`level=INFO msg=hi group1.attr1=val1 group1.attr2=val2 group1.group2.logattr=logval` + suffix)
+		})
+	}
 }
 
 // TestWrapperSourceAndContext verifies that the context is forwarded and
