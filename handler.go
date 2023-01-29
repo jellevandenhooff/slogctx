@@ -6,10 +6,10 @@ import (
 	"golang.org/x/exp/slog"
 )
 
-// ctxKey is the context key for ctxInfo
+// ctxKey is the context key used by CtxHandler.
 type ctxKey struct{}
 
-// ctxInfo is the info stored in the context for ctxHandler
+// ctxInfo is the info stored in the context for CtxHandler.
 type ctxInfo struct {
 	attrs []slog.Attr
 
@@ -17,54 +17,50 @@ type ctxInfo struct {
 	level    slog.Level
 }
 
-// ctxHandler wraps a slog.Handler and includes ctxInfo when handling records
-type ctxHandler struct {
-	inner slog.Handler
+// CtxHandler wraps a slog.Handler with support for WithAttrs and
+// WithMinimumLevel.
+type CtxHandler struct {
+	Inner slog.Handler
 }
 
-// NewCtxHandler wraps a slog.Handler to include attributes and use a possible
-// override level from the context when logging.
-//
-// Use WrapDefaultLoggerWithNewCtxHandler as a convenient shortcut to modify slog.Default().
-func NewCtxHandler(handler slog.Handler) slog.Handler {
-	return ctxHandler{inner: handler}
+func NewCtxHandler(inner slog.Handler) *CtxHandler {
+	return &CtxHandler{Inner: inner}
 }
 
-func (h ctxHandler) Enabled(level slog.Level) bool {
-	/*
-		// pending https://go-review.googlesource.com/c/exp/+/463935
-		if ctx != nil {
-			if info, ok := ctx.Value(ctxKey{}).(*ctxInfo); ok && info.hasLevel {
-				return level >= info.level
-			}
+// Enabled implements Handler. It considers a level added to the context with
+// WithMinimumLevel.
+func (h *CtxHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if ctx != nil {
+		if info, ok := ctx.Value(ctxKey{}).(*ctxInfo); ok && info.hasLevel {
+			return level >= info.level
 		}
-	*/
-	return h.inner.Enabled(level)
+	}
+	return h.Inner.Enabled(ctx, level)
 }
 
-func (h ctxHandler) Handle(r slog.Record) error {
+// Handle implements Handler. It adds attributes added to the context with
+// WithAttrs.
+func (h CtxHandler) Handle(r slog.Record) error {
 	if r.Context != nil {
 		if info, ok := r.Context.Value(ctxKey{}).(*ctxInfo); ok {
 			r.AddAttrs(info.attrs...)
 		}
 	}
-	return h.inner.Handle(r)
+	return h.Inner.Handle(r)
 }
 
-func (h ctxHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return ctxHandler{inner: h.inner.WithAttrs(attrs)}
+// WithAttrs implements Handler. It forwards directly to the original handler.
+func (h *CtxHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &CtxHandler{Inner: h.Inner.WithAttrs(attrs)}
 }
 
-func (h ctxHandler) WithGroup(name string) slog.Handler {
-	return ctxHandler{inner: h.inner.WithGroup(name)}
+// WithGroup implements Handler. It forwards directly to the original handler.
+func (h CtxHandler) WithGroup(name string) slog.Handler {
+	return &CtxHandler{Inner: h.Inner.WithGroup(name)}
 }
 
-// WrapDefaultLoggerWithNewCtxHandler wraps the handler used by slog.Default() with NewCtxHandler.
-func WrapDefaultLoggerWithNewCtxHandler() {
-	slog.SetDefault(slog.New(NewCtxHandler(slog.Default().Handler())))
-}
-
-// WithAttrs attaches the given attributes (as in slog.Logger.With) to the context.
+// WithAttrs attaches the given attributes (as in slog.Logger.With) to the
+// context.
 //
 // Requires a slog.Handler wrapped with NewCtxHandler.
 func WithAttrs(ctx context.Context, args ...any) context.Context {
@@ -82,11 +78,8 @@ func WithAttrs(ctx context.Context, args ...any) context.Context {
 	return context.WithValue(ctx, ctxKey{}, &newInfo)
 }
 
-/*
-// pending https://go-review.googlesource.com/c/exp/+/463935
-
-// WithMinimumLevel overrides the minimum logging level for all log calls using this
-// context.
+// WithMinimumLevel overrides the minimum logging level for all log calls using
+// this context.
 //
 // Requires a slog.Handler wrapped with NewCtxHandler.
 func WithMinimumLevel(ctx context.Context, level slog.Level) context.Context {
@@ -98,7 +91,12 @@ func WithMinimumLevel(ctx context.Context, level slog.Level) context.Context {
 	newInfo.level = level
 	return context.WithValue(ctx, ctxKey{}, &newInfo)
 }
-*/
+
+// WrapDefaultLoggerWithCtxHandler wraps the handler used by slog.Default() with
+// CtxHandler.
+func WrapDefaultLoggerWithCtxHandler() {
+	slog.SetDefault(slog.New(NewCtxHandler(slog.Default().Handler())))
+}
 
 // copied/modified from golang.org/x/exp/slog/record.go:
 
